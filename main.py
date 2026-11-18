@@ -31,6 +31,12 @@ Model (written fresh in this session):
   Tier-weak comparables (dropped from part A; part B uses the family only).
 
   Stdlib only, no network, no randomness, deterministic.
+
+  Robustness: hour-1 is validated explicitly (must be a finite positive
+  number; a missing or garbage print fails loudly instead of silently
+  producing a degenerate forecast), and every emitted hour is self-checked
+  for finite, positive, monotone non-decreasing quantiles before it is
+  returned. Neither check changes any forecast on valid inputs.
 """
 
 import json
@@ -231,7 +237,13 @@ def forecast_case(case):
                   if row.get("hour") == 1), None)
     if known is None:
         raise ValueError("case has no hour-1 print")
-    p1 = max(1.0, float(known["viewers"]))
+    try:
+        raw_p1 = float(known["viewers"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("case has no usable hour-1 viewers print")
+    if not math.isfinite(raw_p1) or raw_p1 <= 0:
+        raise ValueError("hour-1 viewers must be a finite positive number")
+    p1 = max(1.0, raw_p1)
     comp_curves, fam_curves = _collect(case)
     hours = sorted(row["hour"] for row in case.get("forecast") or [])
     if not hours:
@@ -286,6 +298,19 @@ def forecast_case(case):
             if cleaned[j] < cleaned[j - 1]:
                 cleaned[j] = cleaned[j - 1]
         rows.append({"hour": hour, "q": cleaned})
+    # Runtime self-check: every hour's quantiles must be finite, positive and
+    # monotone non-decreasing in q. The cleaning above enforces this, so a
+    # violation here is an internal error -- fail loudly instead of emitting
+    # a malformed forecast.
+    for row in rows:
+        qs = row["q"]
+        if len(qs) != len(LEVELS) or any(
+                not math.isfinite(q) or q <= 0 for q in qs):
+            raise ValueError(
+                f"non-finite/non-positive quantiles at hour {row['hour']}")
+        if any(qs[j] < qs[j - 1] for j in range(1, len(qs))):
+            raise ValueError(
+                f"quantiles not monotone at hour {row['hour']}")
     return {"hours": rows}
 
 
